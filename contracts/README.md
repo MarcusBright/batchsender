@@ -111,6 +111,69 @@ disperse.disperseTokenSimple(token, recipients, values);
 | Mainnet | TBD |
 | Sepolia | TBD |
 
+## CREATE2 Deployment (Multi-chain Same Address)
+
+To deploy the contract with the **same address on all EVM chains**, use CREATE2 deployment:
+
+### How it works
+
+CREATE2 address is determined by: `deployer_address + salt + bytecode`
+
+- **Deployer**: Arachnid's Deterministic Deployment Proxy (`0x4e59b44847b379578588920cA78FbF26c0B4956C`)
+- **Salt**: `keccak256("rockx.disperse.v1")` (configurable in `script/DeployCreate2.s.sol`)
+- **Bytecode**: Must use identical compiler version and settings
+
+### Prerequisites
+
+1. The deterministic deployer must exist on the target chain (pre-deployed on most EVM chains)
+2. Same `foundry.toml` compiler settings across deployments
+3. Same salt value
+
+### Preview Address
+
+```bash
+# Preview the CREATE2 address without deploying
+make preview-create2 RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
+```
+
+### Deploy to Multiple Chains
+
+```bash
+# Configure .env with RPC URLs for each chain
+source .env
+
+# Deploy to Sepolia
+make deploy-create2-sepolia
+
+# Deploy to Mainnet  
+make deploy-create2-mainnet
+
+# Deploy to BSC
+make deploy-create2-bsc
+
+# Deploy to Polygon
+make deploy-create2-polygon
+
+# Deploy to Arbitrum
+make deploy-create2-arbitrum
+
+# Deploy to Optimism
+make deploy-create2-optimism
+
+# Or deploy to any chain with custom RPC
+make deploy-create2 RPC_URL=<your_rpc_url>
+```
+
+### Verify Same Address
+
+After deploying to multiple chains, verify the contract is at the same address:
+
+```bash
+# Check bytecode on each chain
+cast code <DEPLOYED_ADDRESS> --rpc-url <RPC_URL_1>
+cast code <DEPLOYED_ADDRESS> --rpc-url <RPC_URL_2>
+```
+
 ## License
 
 MIT
