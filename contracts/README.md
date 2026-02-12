@@ -4,7 +4,7 @@ A Solidity smart contract for batch transferring ETH and ERC20 tokens to multipl
 
 ## Features
 
-- **disperseEther**: Batch transfer native ETH to multiple recipients
+- **disperseNative**: Batch transfer native ETH to multiple recipients
 - **disperseToken**: Batch transfer ERC20 tokens (transfers to contract first, then distributes)
 - **disperseTokenSimple**: Batch transfer ERC20 tokens directly from sender to recipients
 
@@ -68,10 +68,10 @@ source .env
 
 ```bash
 # Deploy to Sepolia testnet
-forge script script/Deploy.s.sol:DeployScript --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
+forge script script/Deploy.s.sol:DeployDisperse --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
 
 # Deploy to mainnet
-forge script script/Deploy.s.sol:DeployScript --rpc-url $MAINNET_RPC_URL --broadcast --verify
+forge script script/Deploy.s.sol:DeployDisperse --rpc-url $MAINNET_RPC_URL --broadcast --verify
 ```
 
 ## Usage
@@ -89,7 +89,7 @@ values[0] = 1 ether;
 values[1] = 2 ether;
 values[2] = 3 ether;
 
-disperse.disperseEther{value: 6 ether}(recipients, values);
+disperse.disperseNative{value: 6 ether}(recipients, values);
 ```
 
 ### Disperse ERC20 Tokens
