@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disperse Clone - 批量转账工具</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.11.1/ethers.umd.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 600px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            background: #f5f5f7;
+        }
+
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            margin-top: 0;
+            font-size: 1.5rem;
+        }
+
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-family: monospace;
+        }
+
+        button {
+            background: #007aff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: #5856d6;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            word-break: break-all;
+        }
+
+        .error {
+            background: #ffe5e5;
+            color: #d32f2f;
+        }
+
+        .success {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .info {
+            background: #e3f2fd;
+            color: #1565c0;
+        }
+
+        label {
+            display: block;
+            margin-top: 15px;
+            font-weight: bold;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            box-sizing: border-box;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+        }
+
+        .preview-item {
+            padding: 4px 6px;
+            margin-bottom: 4px;
+            border-radius: 6px;
+            font-family: monospace;
+        }
+
+        .preview-item.invalid {
+            background: #ffe5e5;
+            color: #d32f2f;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="card">
+        <h1>Disperse Clone (安全版)</h1>
+
+        <button id="connectBtn">连接钱包</button>
+        <label>选择网络</label>
+        <select id="networkSelect" disabled>
+            <option value="1">Ethereum Mainnet</option>
+            <option value="11155111">Sepolia</option>
+            <option value="17000">Holesky</option>
+        </select>
+        <div id="walletInfo" class="status info" style="display:none;"></div>
+
+        <div id="balances" class="status info" style="display:none;">
+            <div id="nativeBalance">Native: -</div>
+        </div>
+
+
+        <label>代币 (选择网络对应代币，或选择 Native 发送原生币)</label>
+        <select id="tokenSelect" disabled></select>
+        <div id="tokenAddressDisplay" style="margin-top:8px; font-family: monospace; color: #333; display:none;"></div>
+        <div id="tokenBalance" class="status info" style="display:none; margin-top:8px;">Token: -</div>
+
+        <label>接收名单 (格式: 地址,数量 或 地址 数量)</label>
+        <textarea id="recipientsInput" placeholder="0x123... 1.5&#10;0x456... 0.2" disabled></textarea>
+        <div id="calcInfo" class="status info" style="display:none; margin-top:8px;">总额: - &nbsp; 剩余: -</div>
+        <div id="recipientsPreview"
+            style="display:none; margin-top:8px; padding:8px; border-radius:6px; background:#fff"></div>
+
+        <button id="approveBtn" class="secondary" style="display:none;" disabled>第一步：授权代币 (Approve)</button>
+        <button id="disperseBtn" disabled>发送 (Disperse)</button>
+
+        <div id="statusMsg" class="status" style="display:none;"></div>
+    </div>
+
+    <script>
+        // 【配置】在此填入你部署的 Disperse 合约地址
+        const DISPERSE_CONTRACT_ADDRESS = "0x9EFD67bad239e9D63d69ba1c778C8C3d0dF32237";
+
+        // 支持的链配置
+        const CHAINS = {
+            1: { name: "Ethereum Mainnet", chainIdHex: "0x1" },
+            11155111: { name: "Sepolia", chainIdHex: "0xaa36a7" },
+            17000: { name: "Holesky", chainIdHex: "0x4268" }
+        };
+
+        // 最小化 ABI，仅包含我们需要的功能
+        const DISPERSE_ABI = [
+            "function disperseNative(address[] recipients, uint256[] values) payable",
+            "function disperseToken(address token, address[] recipients, uint256[] values)"
+        ];
+        const ERC20_ABI = [
+            "function approve(address spender, uint256 amount) returns (bool)",
+            "function decimals() view returns (uint8)",
+            "function allowance(address owner, address spender) view returns (uint256)",
+            "function balanceOf(address owner) view returns (uint256)",
+            "function name() view returns (string)",
+            "function symbol() view returns (string)"
+        ];
+
+        // 简单地址正则（0x + 40 hex）
+        const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+
+        let provider, signer, userAddress;
+
+        let cachedTokenDecimals = null;
+        let cachedTokenName = null;
+
+        const connectBtn = document.getElementById('connectBtn');
+        const disperseBtn = document.getElementById('disperseBtn');
+        const approveBtn = document.getElementById('approveBtn');
+        const statusMsg = document.getElementById('statusMsg');
+
+        // 确保钱包在目标网络上（尝试请求切换）
+        async function ensureCorrectNetwork(targetChainId) {
+            if (!window.ethereum) throw new Error('请安装 MetaMask!');
+            // 初始化 provider 若尚未
+            if (!provider) provider = new ethers.BrowserProvider(window.ethereum);
+            const network = await provider.getNetwork();
+            if (network.chainId === targetChainId) return;
+            const target = CHAINS[targetChainId];
+            showStatus(`当前网络为 ${network.chainId}，正在请求切换到 ${target ? target.name : targetChainId}...`, 'info');
+            try {
+                await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: target ? target.chainIdHex : '0x' + targetChainId.toString(16) }] });
+                // 重新初始化 provider & signer
+                provider = new ethers.BrowserProvider(window.ethereum);
+                signer = await provider.getSigner();
+                userAddress = await signer.getAddress();
+                document.getElementById('walletInfo').style.display = 'block';
+                document.getElementById('walletInfo').innerText = `已连接: ${userAddress} (${target ? target.name : '链 ' + targetChainId})`;
+                showStatus(`已切换到 ${target ? target.name : '链 ' + targetChainId}！`, 'success');
+            } catch (e) {
+                throw new Error('切换网络失败或被拒绝: ' + e.message);
+            }
+        }
+
+        // 更新钱包及代币余额显示
+        async function updateBalances(tokenAddr) {
+            if (!provider || !userAddress) return;
+            try {
+                const nativeBal = await provider.getBalance(userAddress);
+                document.getElementById('balances').style.display = 'block';
+                document.getElementById('nativeBalance').innerText = `Native: ${ethers.formatUnits(nativeBal, 18)} ETH`;
+
+                if (!tokenAddr) {
+                    document.getElementById('tokenBalance').style.display = 'none';
+                    cachedTokenDecimals = null;
+                    cachedTokenName = null;
+                } else if (!ADDRESS_REGEX.test(tokenAddr)) {
+                    showStatus('代币合约地址格式无效，请输入 0x 开头的 40 个十六进制字符。', 'error');
+                    document.getElementById('tokenBalance').style.display = 'none';
+                    cachedTokenDecimals = null;
+                    cachedTokenName = null;
+                } else {
+                    try {
+                        const tokenContract = new ethers.Contract(ethers.getAddress(tokenAddr), ERC20_ABI, provider);
+                        const decimals = await tokenContract.decimals();
+                        if (decimals === null || decimals === undefined || isNaN(Number(decimals))) throw new Error('decimals 非法');
+                        cachedTokenDecimals = decimals;
+                        // 获取代币名称或符号作为单位显示
+                        let tokenLabel = null;
+                        try { tokenLabel = await tokenContract.name(); } catch (e) { }
+                        if (!tokenLabel) {
+                            try { tokenLabel = await tokenContract.symbol(); } catch (e) { }
+                        }
+                        tokenLabel = tokenLabel || 'TOKEN';
+                        cachedTokenName = tokenLabel;
+                        const tokenBal = await tokenContract.balanceOf(userAddress);
+                        document.getElementById('tokenBalance').style.display = 'block';
+                        document.getElementById('tokenBalance').innerText = `Token (${tokenLabel}): ${ethers.formatUnits(tokenBal, decimals)} ${tokenLabel}`;
+                    } catch (e) {
+                        showStatus('获取代币信息失败: ' + (e.message || e), 'error');
+                        document.getElementById('tokenBalance').style.display = 'none';
+                        cachedTokenDecimals = null;
+                        cachedTokenName = null;
+                    }
+                }
+            } catch (e) {
+                console.error('更新余额失败', e);
+            }
+        }
+
+        // 1. 连接钱包（在连接时尝试将钱包切换到所选网络）
+        connectBtn.onclick = async () => {
+            if (!window.ethereum) return showStatus("请安装 MetaMask!", "error");
+            try {
+                const selectedChain = parseInt(document.getElementById('networkSelect').value, 10);
+                // ensureCorrectNetwork 会在需要时请求切换并初始化 provider/signer
+                await ensureCorrectNetwork(selectedChain);
+
+                // 确保 provider/signer/userAddress 可用
+                provider = provider || new ethers.BrowserProvider(window.ethereum);
+                signer = await provider.getSigner();
+                userAddress = await signer.getAddress();
+
+                const network = await provider.getNetwork();
+                const ninfo = CHAINS[network.chainId] ? CHAINS[network.chainId].name : `Chain ${network.chainId}`;
+
+                document.getElementById('walletInfo').style.display = 'block';
+                document.getElementById('walletInfo').innerText = `已连接: ${userAddress} (${ninfo})`;
+                connectBtn.style.display = 'none';
+                // Enable UI controls after successful connection
+                document.getElementById('networkSelect').disabled = false;
+                document.getElementById('tokenSelect').disabled = false;
+                document.getElementById('recipientsInput').disabled = false;
+                approveBtn.disabled = false;
+                disperseBtn.disabled = false;
+                // 显示余额（使用下拉选择的代币）
+                updateBalances(document.getElementById('tokenSelect').value.trim());
+            } catch (err) {
+                showStatus("连接失败: " + err.message, "error");
+            }
+        };
+
+        // Token select population and change handling
+        const tokenSelect = document.getElementById('tokenSelect');
+
+        function populateTokenSelect(chainId) {
+            // Clear
+            tokenSelect.innerHTML = '';
+            // Native option (empty value means native)
+            const optNative = document.createElement('option');
+            optNative.value = '';
+            optNative.text = 'Native (发送原生币)';
+            tokenSelect.appendChild(optNative);
+
+            // Per-chain known tokens
+            // Ethereum Mainnet (chainId 1)
+            if (chainId === 1) {
+                const usdc = document.createElement('option');
+                usdc.value = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+                usdc.text = 'USDC';
+                tokenSelect.appendChild(usdc);
+                const usdt = document.createElement('option');
+                usdt.value = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+                usdt.text = 'USDT';
+                tokenSelect.appendChild(usdt);
+                // default select USDC
+                tokenSelect.value = usdc.value;
+            }
+
+            // Sepolia (11155111)
+            if (chainId === 11155111) {
+                const usdc = document.createElement('option');
+                usdc.value = '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238';
+                usdc.text = 'USDC';
+                tokenSelect.appendChild(usdc);
+                const usdt = document.createElement('option');
+                usdt.value = '0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0';
+                usdt.text = 'USDT';
+                tokenSelect.appendChild(usdt);
+                // default select USDC
+                tokenSelect.value = usdc.value;
+            }
+
+            // Holesky or other chains: only Native by default
+            if (chainId !== 1 && chainId !== 11155111) {
+                tokenSelect.value = '';
+            }
+
+            // Trigger balance/totals update when selection changes
+            tokenSelect.onchange = async (e) => {
+                // update the displayed token address (no provider needed)
+                updateTokenAddressDisplay(e.target.value.trim());
+                if (!provider || !userAddress) return;
+                statusMsg.style.display = 'none';
+                await updateBalances(e.target.value.trim());
+                computeTotals();
+            };
+            // show current token address immediately
+            updateTokenAddressDisplay(tokenSelect.value.trim());
+        }
+
+        function updateTokenAddressDisplay(tokenAddr) {
+            const el = document.getElementById('tokenAddressDisplay');
+            if (!tokenAddr) {
+                el.style.display = 'none';
+                el.innerText = '';
+                return;
+            }
+            try {
+                const checksum = ethers.getAddress(tokenAddr);
+                el.style.display = 'block';
+                el.innerText = `代币合约地址: ${checksum}`;
+            } catch (e) {
+                el.style.display = 'block';
+                el.innerText = `代币合约地址 (非法格式): ${tokenAddr}`;
+            }
+        }
+
+        // Populate token select on initial load based on current networkSelect value
+        (function initTokenSelectOnLoad() {
+            const sel = document.getElementById('networkSelect');
+            const selectedChain = parseInt(sel.value, 10);
+            populateTokenSelect(selectedChain);
+        })();
+
+        document.getElementById('networkSelect').addEventListener('change', async () => {
+            // 在切换选择后尝试保证钱包处于选择的网络
+            try {
+                const selectedChain = parseInt(document.getElementById('networkSelect').value, 10);
+                // update token select options for the chosen chain
+                populateTokenSelect(selectedChain);
+                await ensureCorrectNetwork(selectedChain);
+                updateBalances(document.getElementById('tokenSelect').value.trim());
+                computeTotals();
+            } catch (e) {
+                showStatus(e.message, 'error');
+            }
+        });
+
+        // 监听接收名单输入，实时计算总额和剩余
+        document.getElementById('recipientsInput').addEventListener('input', () => {
+            computeTotals();
+        });
+
+        // 解析 recipients 并计算总额、剩余
+        async function computeTotals() {
+            const rawInput = document.getElementById('recipientsInput').value.trim();
+            const tokenAddr = document.getElementById('tokenSelect').value.trim();
+            if (!rawInput) {
+                document.getElementById('calcInfo').style.display = 'none';
+                return;
+            }
+            let decimals = 18;
+            if (tokenAddr) {
+                if (!ADDRESS_REGEX.test(tokenAddr)) {
+                    showStatus('代币合约地址格式无效，请输入 0x 开头的 40 个十六进制字符。', 'error');
+                    document.getElementById('calcInfo').style.display = 'none';
+                    disperseBtn.disabled = true;
+                    return;
+                }
+                try {
+                    if (cachedTokenDecimals == null) {
+                        const tokenContract = new ethers.Contract(ethers.getAddress(tokenAddr), ERC20_ABI, provider);
+                        const d = await tokenContract.decimals();
+                        if (d === null || d === undefined || isNaN(Number(d))) throw new Error('decimals 非法');
+                        decimals = d;
+                        cachedTokenDecimals = decimals;
+                    } else decimals = cachedTokenDecimals;
+                } catch (e) {
+                    showStatus('获取代币精度失败: ' + (e.message || e), 'error');
+                    document.getElementById('calcInfo').style.display = 'none';
+                    disperseBtn.disabled = true;
+                    return;
+                }
+            }
+
+            const lines = rawInput.split(/\r?\n/).filter(l => l.trim() !== '');
+            let total = 0n;
+            let previewHtml = '';
+            let invalidFound = false;
+            for (let line of lines) {
+                const parts = line.split(/[, \t]+/).filter(p => p !== '');
+                if (parts.length < 2) continue;
+                const address = parts[0].trim();
+                const amountStr = parts[1].trim();
+
+                const formatOk = ADDRESS_REGEX.test(address);
+                const isValid = formatOk;
+
+                if (!isValid) {
+                    previewHtml += `<div class="preview-item invalid">${address} ${amountStr}</div>`;
+                }
+
+                if (!isValid) {
+                    invalidFound = true;
+                    continue;
+                }
+                try {
+                    const amountWei = ethers.parseUnits(amountStr, decimals);
+                    total += amountWei;
+                } catch (e) {
+                    // ignore parse errors for amounts
+                }
+            }
+
+            const previewEl = document.getElementById('recipientsPreview');
+            previewEl.innerHTML = previewHtml;
+            previewEl.style.display = previewHtml ? 'block' : 'none';
+
+            if (invalidFound) {
+                showStatus('接收名单中包含非法地址，请查看高亮列表。', 'error');
+                document.getElementById('calcInfo').style.display = 'none';
+                disperseBtn.disabled = true;
+                return;
+            }
+
+            // 获取当前 balance
+            try {
+                let balance = 0n;
+                if (tokenAddr) {
+                    const tokenContract = new ethers.Contract(ethers.getAddress(tokenAddr), ERC20_ABI, provider);
+                    balance = await tokenContract.balanceOf(userAddress);
+                } else {
+                    balance = await provider.getBalance(userAddress);
+                }
+
+                const formattedTotal = ethers.formatUnits(total, decimals);
+                const formattedBalance = ethers.formatUnits(balance, decimals);
+                let remaining = balance - total;
+                const formattedRemaining = remaining < 0n ? `-` : ethers.formatUnits(remaining, decimals);
+
+                const unitLabel = tokenAddr ? (cachedTokenName || 'TOKEN') : 'ETH';
+
+                document.getElementById('calcInfo').style.display = 'block';
+                document.getElementById('calcInfo').innerText = `总额: ${formattedTotal} ${unitLabel}; 剩余: ${formattedRemaining} ${unitLabel}`;
+                disperseBtn.disabled = remaining < 0n; // 如果余额不足则禁用发送按钮
+            } catch (e) {
+                console.error('计算余额失败', e);
+            }
+        }
+
+        // 2. 核心逻辑：解析输入并发送
+        disperseBtn.onclick = async () => {
+            try {
+                // 在执行前确保用户钱包处于所选网络
+                const selectedChain = parseInt(document.getElementById('networkSelect').value, 10);
+                await ensureCorrectNetwork(selectedChain);
+
+                const tokenAddr = document.getElementById('tokenSelect').value.trim();
+                if (tokenAddr && !ADDRESS_REGEX.test(tokenAddr)) throw new Error('代币合约地址格式无效');
+                const rawInput = document.getElementById('recipientsInput').value.trim();
+
+                if (!rawInput) throw new Error("请输入接收地址和数量");
+
+                showStatus("正在处理数据...", "info");
+
+                // 解析数据
+                const lines = rawInput.split(/\r?\n/).filter(line => line.trim() !== "");
+                const recipients = [];
+                const amounts = [];
+                let totalAmountBigInt = 0n;
+
+                // 获取精度 (ETH默认为18，ERC20需查询)
+                let decimals = 18;
+                if (tokenAddr) {
+                    const tokenContract = new ethers.Contract(ethers.getAddress(tokenAddr), ERC20_ABI, provider);
+                    try {
+                        decimals = await tokenContract.decimals(); // 自动获取代币精度，这是安全的关键！
+                        if (decimals === null || decimals === undefined || isNaN(Number(decimals))) {
+                            throw new Error('代币 decimals 返回非法值');
+                        }
+                    } catch (e) {
+                        throw new Error('获取代币精度失败，已中止: ' + (e.message || e));
+                    }
+                }
+
+                for (let line of lines) {
+                    // 支持逗号或空格分隔
+                    const parts = line.split(/[, \t]+/).filter(p => p !== "");
+                    if (parts.length < 2) continue;
+
+                    const address = parts[0];
+                    const amountStr = parts[1];
+
+                    if (!ADDRESS_REGEX.test(address)) throw new Error(`无效地址格式: ${address}`);
+
+                    // 【安全核心】使用 parseUnits 将 "1.5" 转为 "1500000..." (BigInt)
+                    // 这避免了 JavaScript 的浮点数精度丢失问题
+                    const amountWei = ethers.parseUnits(amountStr, decimals);
+
+                    // convert to checksum address before passing to wallet/contract
+                    recipients.push(ethers.getAddress(address));
+                    amounts.push(amountWei);
+                    totalAmountBigInt += amountWei;
+                }
+
+                const disperseContract = new ethers.Contract(DISPERSE_CONTRACT_ADDRESS, DISPERSE_ABI, signer);
+
+                if (tokenAddr === "") {
+                    // === 发送 ETH ===
+                    showStatus("正在发起 ETH 交易...", "info");
+                    const tx = await disperseContract.disperseNative(recipients, amounts, { value: totalAmountBigInt });
+                    await tx.wait();
+                    showStatus(`发送成功! 交易哈希: ${tx.hash}`, "success");
+                } else {
+                    // === 发送 ERC20 ===
+                    const tokenContract = new ethers.Contract(ethers.getAddress(tokenAddr), ERC20_ABI, signer);
+
+                    // 检查授权额度
+                    const currentAllowance = await tokenContract.allowance(userAddress, DISPERSE_CONTRACT_ADDRESS);
+
+                    if (currentAllowance < totalAmountBigInt) {
+                        showStatus("需要先授权代币...", "info");
+                        approveBtn.style.display = "block";
+                        approveBtn.innerText = `点击授权 ${ethers.formatUnits(totalAmountBigInt, decimals)} 代币`;
+
+                        // 绑定授权按钮事件
+                        approveBtn.onclick = async () => {
+                            try {
+                                const approveTx = await tokenContract.approve(DISPERSE_CONTRACT_ADDRESS, totalAmountBigInt);
+                                showStatus("授权交易中，请等待...", "info");
+                                await approveTx.wait();
+                                showStatus("授权成功！现在请点击“发送”按钮。", "success");
+                                approveBtn.style.display = "none";
+                            } catch (e) {
+                                showStatus("授权失败: " + e.message, "error");
+                            }
+                        };
+                        return; // 暂停，等待用户点击授权
+                    }
+
+                    showStatus("正在发起代币分发...", "info");
+                    disperseBtn.disabled = true; // 防止重复点击
+                    const tx = await disperseContract.disperseToken(ethers.getAddress(tokenAddr), recipients, amounts);
+                    showStatus(`交易已发送，等待确认，交易哈希: ${tx.hash}`, "info");
+                    await tx.wait();
+                    showStatus(`发送成功! 交易哈希: ${tx.hash}`, "success");
+                    disperseBtn.disabled = false;
+                }
+
+            } catch (err) {
+                console.error(err);
+                showStatus(err.message || "发生错误", "error");
+            }
+        };
+
+        function showStatus(msg, type) {
+            statusMsg.style.display = 'block';
+            statusMsg.className = `status ${type}`;
+            statusMsg.innerText = msg;
+        }
+    </script>
+
+</body>
+
+</html>
