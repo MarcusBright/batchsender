@@ -120,6 +120,7 @@
         <label>选择网络</label>
         <select id="networkSelect" disabled>
             <option value="1">Ethereum Mainnet</option>
+            <option value="56">BSC</option>
             <option value="11155111">Sepolia</option>
             <option value="17000">Holesky</option>
         </select>
@@ -154,6 +155,7 @@
         // 支持的链配置
         const CHAINS = {
             1: { name: "Ethereum Mainnet", chainIdHex: "0x1" },
+            56: { name: "BSC", chainIdHex: "0x38" },
             11155111: { name: "Sepolia", chainIdHex: "0xaa36a7" },
             17000: { name: "Holesky", chainIdHex: "0x4268" }
         };
@@ -328,8 +330,29 @@
             }
 
             // Holesky or other chains: only Native by default
-            if (chainId !== 1 && chainId !== 11155111) {
+            if (chainId !== 1 && chainId !== 11155111 && chainId !== 56) {
                 tokenSelect.value = '';
+            }
+
+            // BSC known tokens
+            if (chainId === 56) {
+                const usdc = document.createElement('option');
+                usdc.value = '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d';
+                usdc.text = 'USDC';
+                tokenSelect.appendChild(usdc);
+
+                const usdt = document.createElement('option');
+                usdt.value = '0x55d398326f99059fF775485246999027B3197955';
+                usdt.text = 'USDT';
+                tokenSelect.appendChild(usdt);
+
+                const br = document.createElement('option');
+                br.value = '0xFf7d6A96ae471BbCD7713aF9CB1fEeB16cf56B41';
+                br.text = 'BR';
+                tokenSelect.appendChild(br);
+
+                // default to USDC on BSC
+                tokenSelect.value = usdc.value;
             }
 
             // Trigger balance/totals update when selection changes
